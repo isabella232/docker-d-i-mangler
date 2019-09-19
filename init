@@ -1,0 +1,70 @@
+#!/bin/bash
+
+set -e
+
+if [ -z "$ISO_FILE" ]; then
+	echo "Please specify the ISO to modify with the ISO_FILE env var" >&2
+	exit 1
+fi
+
+if [ -z "$OUTPUT_FILE" ]; then
+	echo "Please specify the file to write the modified ISO to with the OUTPUT_FILE env var" >&2
+	exit 1
+fi
+
+if ! [ -f "$ISO_FILE" ]; then
+	echo "ISO file $ISO_FILE does not appear to exist, or is not a file" >&2
+	exit 1
+fi
+
+if [ -n "$SCRIPT" ]; then
+	if ! [ -e "$SCRIPT" ]; then
+		echo "Script file $SCRIPT does not exist" >&2
+		exit 1
+	fi
+
+	if ! [ -x "$SCRIPT" ]; then
+		echo "Script file $SCRIPT is not executable" >&2
+		exit 1
+	fi
+fi
+
+WORKDIR="$(mktemp -d)"
+mkdir -p "$WORKDIR/isofiles"
+
+xorriso -osirrox on -indev "$ISO_FILE" -extract / "$WORKDIR/isofiles"
+echo >&2
+echo >&2
+
+cd "$WORKDIR/isofiles"
+
+rv=0
+
+if [ -n "$SCRIPT" ]; then
+	echo "Executing script $SCRIPT to modify ISO image"
+
+	$SCRIPT || rv=$?
+else
+	echo "You are now in the root directory of a copy of the contents of the ISO image." >&2
+	echo "Any changes you make in here will be reflected in a new ISO image which I" >&2
+	echo "will create at $OUTPUT_FILE when you exit from this shell." >&2
+	echo >&2
+	echo "If you wish to abort, then exit the shell with a non-zero status (eg 'exit 1')." >&2
+
+	/bin/bash || rv=$?
+fi
+
+if [ "$rv" != "0" ]; then
+	echo "Shell or script exited with non-zero status.  Not creating new ISO image." >&2
+else
+	echo "Generating new ISO image at $OUTPUT_FILE" >&2
+
+	md5sum $(find ! -name "md5sum.txt" ! -path "./isolinux/*" -follow -type f) > md5sum.txt
+
+	xorriso -as mkisofs -r -o "$OUTPUT_FILE" -J -joliet-long -cache-inodes \
+		-isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+		-b isolinux/isolinux.bin -c isolinux/boot.cat -boot-load-size 4 \
+		-boot-info-table -no-emul-boot -eltorito-alt-boot -e boot/grub/efi.img \
+		-no-emul-boot -isohybrid-gpt-basdat -isohybrid-apm-hfsplus \
+		"$WORKDIR/isofiles"
+fi
